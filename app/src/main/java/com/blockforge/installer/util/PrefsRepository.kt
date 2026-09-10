@@ -14,6 +14,8 @@ class PrefsRepository(private val context: Context) {
 
     private fun folderKey(category: Category) = stringPreferencesKey("folder_uri_${category.name}")
     private val curseForgeKeyPref = stringPreferencesKey("curseforge_api_key")
+    private val pojavRootUriPref = stringPreferencesKey("pojav_root_uri")
+    private val selectedPojavInstancePref = stringPreferencesKey("selected_pojav_instance")
 
     fun folderUriFlow(category: Category): Flow<String?> =
         context.dataStore.data.map { it[folderKey(category)] }
@@ -27,5 +29,19 @@ class PrefsRepository(private val context: Context) {
 
     suspend fun setCurseForgeApiKey(key: String) {
         context.dataStore.edit { it[curseForgeKeyPref] = key }
+    }
+
+    val pojavRootUriFlow: Flow<String?> =
+        context.dataStore.data.map { it[pojavRootUriPref] }
+
+    suspend fun setPojavRootUri(uri: String) {
+        context.dataStore.edit { it[pojavRootUriPref] = uri }
+    }
+
+    val selectedPojavInstanceFlow: Flow<String?> =
+        context.dataStore.data.map { it[selectedPojavInstancePref] }
+
+    suspend fun setSelectedPojavInstance(id: String) {
+        context.dataStore.edit { it[selectedPojavInstancePref] = id }
     }
 }

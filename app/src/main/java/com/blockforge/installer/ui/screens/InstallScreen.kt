@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.blockforge.installer.model.FileResult
+import com.blockforge.installer.model.PojavInstance
 import com.blockforge.installer.model.ProjectResult
 import com.blockforge.installer.ui.BrowseViewModel
 import kotlinx.coroutines.launch
@@ -32,16 +33,15 @@ fun InstallScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val category = viewModel.state.collectAsState().value.category
+    val state by viewModel.state.collectAsState()
+    val category = state.category
 
     var files by remember { mutableStateOf<List<FileResult>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var selectedFile by remember { mutableStateOf<FileResult?>(null) }
-    var extractArchive by remember {
-        mutableStateOf(category.name == "RESOURCE_PACKS" || category.name == "SHADERS")
-    }
-    var rememberedFolder by remember { mutableStateOf<Uri?>(null) }
+    var extractArchive by remember { mutableStateOf(category == com.blockforge.installer.model.Category.WORLDS) }
+    var showInstances by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -51,8 +51,7 @@ fun InstallScreen(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            scope.launch { viewModel.rememberFolderUri(category, uri) }
-            viewModel.installTo(uri, extractArchive)
+            viewModel.loadPojavInstances(uri)
         }
     }
 
@@ -65,7 +64,6 @@ fun InstallScreen(
             error = t.message ?: "Could not load files for this project."
         }
         loading = false
-        rememberedFolder = viewModel.rememberedFolderUri(category)?.let { Uri.parse(it) }
     }
 
     Scaffold(
@@ -86,11 +84,60 @@ fun InstallScreen(
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
-            Text(
-                project.description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(project.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
+
+            Text("Minecraft instance", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            if (!state.pojavRootConfigured || state.pojavInstances.isEmpty()) {
+                OutlinedButton(
+                    onClick = { folderPicker.launch(null) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Folder, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Select PojavLauncher folder")
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Select the folder containing Pojav's profiles.json. BlockForge will remember it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Box {
+                    OutlinedButton(
+                        onClick = { showInstances = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(state.selectedPojavInstance?.name ?: "Select instance", modifier = Modifier.weight(1f))
+                        Text("▼")
+                    }
+                    DropdownMenu(
+                        expanded = showInstances,
+                        onDismissRequest = { showInstances = false }
+                    ) {
+                        state.pojavInstances.forEach { instance ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(instance.name)
+                                        instance.version?.let {
+                                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.selectPojavInstance(instance)
+                                    showInstances = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(16.dp))
             Text("Choose a version to install:", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
@@ -104,11 +151,10 @@ fun InstallScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(files) { file ->
-                        FileRow(
-                            file = file,
-                            selected = selectedFile == file,
-                            onSelect = { selectedFile = file; viewModel.choosePendingFile(file) }
-                        )
+                        FileRow(file, selectedFile == file) {
+                            selectedFile = file
+                            viewModel.choosePendingFile(file)
+                        }
                     }
                 }
             }
@@ -122,43 +168,40 @@ fun InstallScreen(
                         colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
                     )
                     Text(
-                        "Extract into a folder (recommended for resource packs / shaders)",
+                        "Extract archive",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Spacer(Modifier.height(8.dp))
 
-                rememberedFolder?.let {
-                    Text(
-                        "Last used folder is remembered for ${category.label}.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-
                 Button(
                     onClick = {
-                        if (selectedFile == null) return@Button
-                        val remembered = rememberedFolder
-                        if (remembered != null) {
-                            viewModel.installTo(remembered, extractArchive)
-                        } else {
-                            folderPicker.launch(null)
+                        state.selectedPojavInstance?.let {
+                            viewModel.installToPojavInstance(it, extractArchive)
                         }
                     },
-                    enabled = selectedFile != null,
+                    enabled = selectedFile != null && state.selectedPojavInstance != null,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Icon(Icons.Filled.Folder, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Install to selected folder")
+                    Text(
+                        state.selectedPojavInstance?.let { "Install to ${it.name}" }
+                            ?: "Select an instance first"
+                    )
                 }
-                Spacer(Modifier.height(4.dp))
-                TextButton(onClick = { folderPicker.launch(null) }) {
-                    Text("Choose a different folder…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            state.installMessage?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(msg, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -173,10 +216,7 @@ private fun FileRow(file: FileResult, selected: Boolean, onSelect: () -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(12.dp)
-                .clickable(onClick = onSelect),
+            Modifier.fillMaxWidth().padding(12.dp).clickable(onClick = onSelect),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {

@@ -7,10 +7,12 @@ import androidx.lifecycle.viewModelScope
 import com.blockforge.installer.model.Category
 import com.blockforge.installer.model.FileResult
 import com.blockforge.installer.model.ProjectResult
+import com.blockforge.installer.model.PojavInstance
 import com.blockforge.installer.model.Source
 import com.blockforge.installer.network.ContentRepository
 import com.blockforge.installer.saf.InstallResult
 import com.blockforge.installer.saf.SafInstaller
+import com.blockforge.installer.saf.PojavInstanceRepository
 import com.blockforge.installer.util.PrefsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,13 +29,17 @@ data class BrowseUiState(
     val loadState: LoadState = LoadState.IDLE,
     val errorMessage: String? = null,
     val installMessage: String? = null,
-    val curseForgeApiKey: String = ""
+    val curseForgeApiKey: String = "",
+    val pojavInstances: List<PojavInstance> = emptyList(),
+    val selectedPojavInstance: PojavInstance? = null,
+    val pojavRootConfigured: Boolean = false
 )
 
 class BrowseViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = ContentRepository()
     private val prefs = PrefsRepository(application)
+    private val pojavRepository = PojavInstanceRepository(application)
 
     private val _state = MutableStateFlow(BrowseUiState())
     val state: StateFlow<BrowseUiState> = _state
@@ -51,8 +57,78 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
             prefs.curseForgeApiKeyFlow.first()?.let { key ->
                 _state.value = _state.value.copy(curseForgeApiKey = key)
             }
+            prefs.pojavRootUriFlow.first()?.let { savedUri ->
+                loadPojavInstances(Uri.parse(savedUri))
+            }
         }
     }
+
+
+    fun loadPojavInstances(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val instances = pojavRepository.readProfiles(uri)
+                prefs.setPojavRootUri(uri.toString())
+                val selectedId = prefs.selectedPojavInstanceFlow.first()
+                val selected = instances.firstOrNull { it.id == selectedId }
+                    ?: instances.firstOrNull()
+                if (selected != null && selected.id != selectedId) {
+                    prefs.setSelectedPojavInstance(selected.id)
+                }
+                _state.value = _state.value.copy(
+                    pojavInstances = instances,
+                    selectedPojavInstance = selected,
+                    pojavRootConfigured = true,
+                    errorMessage = null
+                )
+            } catch (t: Throwable) {
+                _state.value = _state.value.copy(
+                    pojavRootConfigured = false,
+                    errorMessage = t.message ?: "Could not read PojavLauncher profiles.json."
+                )
+            }
+        }
+    }
+
+    fun selectPojavInstance(instance: PojavInstance) {
+        _state.value = _state.value.copy(selectedPojavInstance = instance)
+        viewModelScope.launch { prefs.setSelectedPojavInstance(instance.id) }
+    }
+
+    fun installToPojavInstance(instance: PojavInstance, extractIfArchive: Boolean) {
+        val file = pendingFile ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(installMessage = "Downloading \"${file.fileName}\"...")
+            val rootString = prefs.pojavRootUriFlow.first()
+            if (rootString == null) {
+                _state.value = _state.value.copy(installMessage = "PojavLauncher folder is not configured.")
+                return@launch
+            }
+            val rootUri = Uri.parse(rootString)
+            val gameDir = pojavRepository.resolveGameDirectory(rootUri, instance)
+            if (gameDir == null) {
+                _state.value = _state.value.copy(
+                    installMessage = "The selected instance folder is outside the folder you granted to BlockForge. Re-select the PojavLauncher .minecraft folder that contains the instance."
+                )
+                return@launch
+            }
+            val result = SafInstaller.downloadAndInstallInto(
+                context = getApplication(),
+                root = gameDir,
+                downloadUrl = file.downloadUrl,
+                fileName = file.fileName,
+                extractIfArchive = extractIfArchive,
+                targetSubfolder = _state.value.category.targetSubfolder
+            )
+            _state.value = _state.value.copy(
+                installMessage = when (result) {
+                    is InstallResult.Success -> result.message
+                    is InstallResult.Failure -> "❌ ${result.message}"
+                }
+            )
+        }
+    }
+
 
     fun setSource(source: Source) {
         _state.value = _state.value.copy(source = source)

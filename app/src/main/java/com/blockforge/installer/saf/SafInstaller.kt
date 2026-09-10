@@ -15,74 +15,93 @@ sealed class InstallResult {
     data class Failure(val message: String) : InstallResult()
 }
 
-/**
- * Handles: downloading a mod/pack/world/shader file, then writing it into a folder the
- * user picked via the Storage Access Framework (e.g. their Amethyst launcher's game
- * data folder). SAF is required on modern Android to write into another app's storage
- * without root, since apps can no longer freely read/write each other's private files.
- */
+/** Downloads content and writes it into a SAF directory. */
 object SafInstaller {
 
-    /**
-     * Downloads [downloadUrl] and installs it under the tree rooted at [treeUri].
-     *
-     * @param extractIfArchive if true and the file is a .zip/.mcpack/.mcworld/.mcaddon,
-     *   it is unpacked into a folder named after the file (minus extension) instead of
-     *   being copied as a single archive. Useful for behavior/resource packs that a
-     *   launcher expects as loose folders rather than zips.
-     */
     suspend fun downloadAndInstall(
         context: Context,
         treeUri: Uri,
         downloadUrl: String,
         fileName: String,
-        extractIfArchive: Boolean
+        extractIfArchive: Boolean,
+        targetSubfolder: String? = null
     ): InstallResult = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+            ?: return@withContext InstallResult.Failure("Selected folder is no longer accessible. Please choose it again.")
+        installIntoRoot(context, root, downloadUrl, fileName, extractIfArchive, targetSubfolder)
+    }
+
+    /** Same installer, but accepts an already-resolved DocumentFile (used for Pojav instances). */
+    suspend fun downloadAndInstallInto(
+        context: Context,
+        root: DocumentFile,
+        downloadUrl: String,
+        fileName: String,
+        extractIfArchive: Boolean,
+        targetSubfolder: String? = null
+    ): InstallResult = withContext(Dispatchers.IO) {
+        installIntoRoot(context, root, downloadUrl, fileName, extractIfArchive, targetSubfolder)
+    }
+
+    private fun installIntoRoot(
+        context: Context,
+        root: DocumentFile,
+        downloadUrl: String,
+        fileName: String,
+        extractIfArchive: Boolean,
+        targetSubfolder: String?
+    ): InstallResult {
         try {
-            val root = DocumentFile.fromTreeUri(context, treeUri)
-                ?: return@withContext InstallResult.Failure("Selected folder is no longer accessible. Please choose it again.")
             if (!root.canWrite()) {
-                return@withContext InstallResult.Failure("No write permission on the selected folder.")
+                return InstallResult.Failure("No write permission on the selected folder.")
             }
 
-            // 1. Download to a temp cache file first (never stream straight into SAF while
-            //    also parsing it, so a network hiccup can't leave a half-written pack).
-            val tempFile = File(context.cacheDir, "dl_${System.currentTimeMillis()}_$fileName")
-            val request = Request.Builder().url(downloadUrl).build()
-            NetworkModule.downloadClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext InstallResult.Failure("Download failed: HTTP ${response.code}")
-                }
-                val body = response.body ?: return@withContext InstallResult.Failure("Empty response body.")
-                tempFile.outputStream().use { out -> body.byteStream().copyTo(out) }
-            }
-
-            val isArchive = fileName.endsWith(".zip", true) ||
-                fileName.endsWith(".mcpack", true) ||
-                fileName.endsWith(".mcworld", true) ||
-                fileName.endsWith(".mcaddon", true)
-
-            if (extractIfArchive && isArchive) {
-                val folderName = fileName.substringBeforeLast('.')
-                val destFolder = root.findFile(folderName)?.takeIf { it.isDirectory }
-                    ?: root.createDirectory(folderName)
-                    ?: return@withContext InstallResult.Failure("Could not create destination folder.")
-                extractZipInto(context, tempFile, destFolder)
+            val destinationRoot = if (targetSubfolder.isNullOrBlank()) {
+                root
             } else {
-                // Replace any existing file of the same name so re-installs/updates work cleanly.
-                root.findFile(fileName)?.delete()
-                val mime = "application/octet-stream"
-                val newFile = root.createFile(mime, fileName)
-                    ?: return@withContext InstallResult.Failure("Could not create file in destination folder.")
-                context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
-                    tempFile.inputStream().use { it.copyTo(out) }
-                } ?: return@withContext InstallResult.Failure("Could not open output stream for destination file.")
+                root.findFile(targetSubfolder)?.takeIf { it.isDirectory }
+                    ?: root.createDirectory(targetSubfolder)
+                    ?: return InstallResult.Failure("Could not create $targetSubfolder folder.")
             }
 
-            tempFile.delete()
-            InstallResult.Success("Installed \"$fileName\" successfully.")
+            val safeName = File(fileName).name
+            val tempFile = File(context.cacheDir, "dl_${System.currentTimeMillis()}_$safeName")
+            try {
+                val request = Request.Builder().url(downloadUrl).build()
+                NetworkModule.downloadClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return InstallResult.Failure("Download failed: HTTP ${response.code}")
+                    }
+                    val body = response.body ?: return InstallResult.Failure("Empty response body.")
+                    tempFile.outputStream().use { out -> body.byteStream().copyTo(out) }
+                }
+
+                val isArchive = safeName.endsWith(".zip", true) ||
+                    safeName.endsWith(".mcpack", true) ||
+                    safeName.endsWith(".mcworld", true) ||
+                    safeName.endsWith(".mcaddon", true)
+
+                if (extractIfArchive && isArchive) {
+                    val folderName = safeName.substringBeforeLast('.')
+                    val destFolder = destinationRoot.findFile(folderName)?.takeIf { it.isDirectory }
+                        ?: destinationRoot.createDirectory(folderName)
+                        ?: return InstallResult.Failure("Could not create destination folder.")
+                    extractZipInto(context, tempFile, destFolder)
+                } else {
+                    destinationRoot.findFile(safeName)?.delete()
+                    val newFile = destinationRoot.createFile("application/octet-stream", safeName)
+                        ?: return InstallResult.Failure("Could not create file in destination folder.")
+                    context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
+                        tempFile.inputStream().use { it.copyTo(out) }
+                    } ?: return InstallResult.Failure("Could not open output stream for destination file.")
+                }
+
+                return InstallResult.Success("Installed \"$safeName\" successfully.")
+            } finally {
+                tempFile.delete()
+            }
         } catch (t: Throwable) {
-            InstallResult.Failure("Install failed: ${t.message ?: t.javaClass.simpleName}")
+            return InstallResult.Failure("Install failed: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
@@ -90,21 +109,19 @@ object SafInstaller {
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                if (!entry.isDirectory) {
-                    val parts = entry.name.split("/").filter { it.isNotBlank() }
+                // Prevent zip-slip paths such as ../../outside.txt.
+                val parts = entry.name.replace('\\', '/').split('/').filter { it.isNotBlank() && it != "." && it != ".." }
+                if (!entry.isDirectory && parts.isNotEmpty()) {
                     var currentFolder = destFolder
                     for (i in 0 until parts.size - 1) {
                         currentFolder = currentFolder.findFile(parts[i])?.takeIf { it.isDirectory }
                             ?: currentFolder.createDirectory(parts[i])
-                            ?: currentFolder
+                            ?: break
                     }
                     val leafName = parts.last()
                     currentFolder.findFile(leafName)?.delete()
-                    val newFile = currentFolder.createFile("application/octet-stream", leafName)
-                    if (newFile != null) {
-                        context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
-                            zis.copyTo(out)
-                        }
+                    currentFolder.createFile("application/octet-stream", leafName)?.let { newFile ->
+                        context.contentResolver.openOutputStream(newFile.uri)?.use { out -> zis.copyTo(out) }
                     }
                 }
                 zis.closeEntry()
