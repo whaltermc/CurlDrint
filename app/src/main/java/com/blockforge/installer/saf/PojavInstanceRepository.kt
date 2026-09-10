@@ -2,59 +2,63 @@ package com.blockforge.installer.saf
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.blockforge.installer.model.PojavInstance
 
-/** Reads Pojav's profiles.json and resolves an instance's gameDir inside the SAF tree. */
 class PojavInstanceRepository(private val context: Context) {
 
-    fun readProfiles(pojavRootUri: Uri): List<PojavInstance> {
-        val root = DocumentFile.fromTreeUri(context, pojavRootUri)
-            ?: return emptyList()
-        val profilesFile = root.findFile("profiles.json")
-            ?: return emptyList()
-        val input = context.contentResolver.openInputStream(profilesFile.uri)
-            ?: return emptyList()
-        val text = input.bufferedReader().use { it.readText() }
-        return PojavProfilesParser.parse(text)
+    fun canAccessLauncherFolder(rootUri: Uri): Boolean {
+        val root = DocumentFile.fromTreeUri(context, rootUri) ?: return false
+        if (!root.canRead() || !root.canWrite()) return false
+        val minecraft = root.findFile(".minecraft") ?: return false
+        if (!minecraft.isDirectory || !minecraft.canRead()) return false
+        val profiles = minecraft.findFile("launcher_profiles.json") ?: return false
+        return profiles.isFile && profiles.canRead()
+    }
+
+    fun readProfiles(rootUri: Uri): List<PojavInstance> {
+        val root = DocumentFile.fromTreeUri(context, rootUri)
+            ?: error("The selected launcher folder is no longer accessible.")
+        val minecraft = root.findFile(".minecraft")
+            ?: error(".minecraft was not found in the selected launcher folder.")
+        val profilesFile = minecraft.findFile("launcher_profiles.json")
+            ?: error(".minecraft/launcher_profiles.json was not found.")
+
+        val json = context.contentResolver.openInputStream(profilesFile.uri)
+            ?.bufferedReader()
+            ?.use { it.readText() }
+            ?: error("Could not read launcher_profiles.json.")
+
+        return PojavProfilesParser.parse(json)
     }
 
     /**
-     * Resolves profile.gameDir when it is inside the tree the user granted us.
-     * A profile without gameDir uses the selected Pojav root itself.
+     * Resolves the profile's gameDir relative to the SAF root.
+     * Examples:
+     *   missing gameDir -> .minecraft
+     *   ./custom_instances/Foo -> custom_instances/Foo
+     *   custom_instances/Foo -> custom_instances/Foo
      */
-    fun resolveGameDirectory(rootUri: Uri, instance: PojavInstance): DocumentFile? {
+    fun resolveGameDir(rootUri: Uri, instance: PojavInstance): DocumentFile? {
         val root = DocumentFile.fromTreeUri(context, rootUri) ?: return null
-        val gameDir = instance.gameDir?.trim().orEmpty()
-        if (gameDir.isEmpty()) return root
+        val raw = instance.gameDir?.trim().orEmpty()
+        val normalized = raw.replace('\\', '/')
+        val relative = when {
+            raw.isBlank() -> ".minecraft"
+            normalized.startsWith("./") -> normalized.removePrefix("./")
+            normalized.contains("/custom_instances/") -> normalized.substringAfter("/custom_instances/").let { "custom_instances/$it" }
+            normalized.contains("/.minecraft/") -> normalized.substringAfter("/").let { ".minecraft/$it" }
+            normalized.endsWith("/.minecraft") -> ".minecraft"
+            else -> normalized.trimStart('/')
+        }
 
-        val treeId = DocumentsContract.getTreeDocumentId(rootUri)
-        val targetId = absolutePathToDocumentId(gameDir) ?: return null
-
-        if (targetId == treeId) return root
-        val prefix = if (treeId.endsWith('/')) treeId else "$treeId/"
-        if (!targetId.startsWith(prefix)) return null
-
-        val relative = targetId.removePrefix(prefix)
-            .split('/')
-            .filter { it.isNotBlank() }
-
+        // launcher_profiles.json commonly stores gameDir as ./custom_instances/...
+        // Keep traversal inside the user-selected SAF tree.
+        val parts = relative.split('/').filter { it.isNotBlank() && it != "." && it != ".." }
         var current = root
-        for (part in relative) {
+        for (part in parts) {
             current = current.findFile(part)?.takeIf { it.isDirectory } ?: return null
         }
         return current
-    }
-
-    private fun absolutePathToDocumentId(path: String): String? {
-        val normalized = path.replace('\\', '/').trimEnd('/')
-        val primary = "/storage/emulated/0"
-        return when {
-            normalized == primary -> "primary:"
-            normalized.startsWith("$primary/") ->
-                "primary:" + normalized.removePrefix("$primary/")
-            else -> null
-        }
     }
 }

@@ -3,7 +3,7 @@ package com.blockforge.installer.saf
 import com.blockforge.installer.model.PojavInstance
 import org.json.JSONObject
 
-/** Parses the Minecraft Java launcher profiles.json used by PojavLauncher. */
+/** Parses .minecraft/launcher_profiles.json used by Pojav-style launchers. */
 object PojavProfilesParser {
     fun parse(jsonText: String): List<PojavInstance> {
         val root = JSONObject(jsonText)
@@ -16,11 +16,13 @@ object PojavProfilesParser {
             val profile = profiles.optJSONObject(id) ?: continue
             result += PojavInstance(
                 id = id,
-                name = profile.optString("name").ifBlank { id },
-                version = profile.optString("lastVersionId").takeIf { it.isNotBlank() },
-                gameDir = profile.optString("gameDir").ifBlank { null }
+                name = profile.optString("name").ifBlank { "Unnamed instance" },
+                version = profile.optString("lastVersionId").ifBlank { null },
+                gameDir = profile.optString("gameDir").ifBlank { null },
+                iconData = profile.optString("icon").ifBlank { null }
             )
         }
-        return result
+
+        return result.sortedBy { it.name.lowercase() }
     }
 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +27,8 @@ import com.blockforge.installer.ui.LoadState
 @Composable
 fun BrowseScreen(
     viewModel: BrowseViewModel,
+    category: Category,
+    onBack: () -> Unit,
     onOpenProject: (ProjectResult) -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -35,7 +38,12 @@ fun BrowseScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("BlockForge Installer") },
+                title = { Text("${category.label} • ${state.selectedInstance?.name ?: "Instance"}") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
@@ -55,8 +63,6 @@ fun BrowseScreen(
                 .padding(horizontal = 12.dp)
         ) {
             SourceToggle(state.source) { viewModel.setSource(it) }
-            Spacer(Modifier.height(8.dp))
-            CategoryTabs(state.category) { viewModel.setCategory(it) }
             Spacer(Modifier.height(8.dp))
             SearchBar(state.query, onQueryChange = viewModel::setQuery, onSearch = viewModel::search)
             Spacer(Modifier.height(8.dp))

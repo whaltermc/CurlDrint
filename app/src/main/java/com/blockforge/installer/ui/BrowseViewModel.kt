@@ -6,13 +6,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.blockforge.installer.model.Category
 import com.blockforge.installer.model.FileResult
-import com.blockforge.installer.model.ProjectResult
 import com.blockforge.installer.model.PojavInstance
+import com.blockforge.installer.model.ProjectResult
 import com.blockforge.installer.model.Source
 import com.blockforge.installer.network.ContentRepository
 import com.blockforge.installer.saf.InstallResult
-import com.blockforge.installer.saf.SafInstaller
 import com.blockforge.installer.saf.PojavInstanceRepository
+import com.blockforge.installer.saf.SafInstaller
 import com.blockforge.installer.util.PrefsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,21 +30,21 @@ data class BrowseUiState(
     val errorMessage: String? = null,
     val installMessage: String? = null,
     val curseForgeApiKey: String = "",
-    val pojavInstances: List<PojavInstance> = emptyList(),
-    val selectedPojavInstance: PojavInstance? = null,
-    val pojavRootConfigured: Boolean = false
+    val launcherFolderConfigured: Boolean = false,
+    val launcherLoading: Boolean = false,
+    val instances: List<PojavInstance> = emptyList(),
+    val selectedInstance: PojavInstance? = null
 )
 
 class BrowseViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = ContentRepository()
     private val prefs = PrefsRepository(application)
-    private val pojavRepository = PojavInstanceRepository(application)
+    private val instanceRepository = PojavInstanceRepository(application)
 
     private val _state = MutableStateFlow(BrowseUiState())
     val state: StateFlow<BrowseUiState> = _state
 
-    // Project awaiting a file choice / folder pick, kept outside state to avoid re-triggering recompositions unnecessarily.
     var pendingProject: ProjectResult? = null
         private set
     var pendingFiles: List<FileResult> = emptyList()
@@ -57,78 +57,58 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
             prefs.curseForgeApiKeyFlow.first()?.let { key ->
                 _state.value = _state.value.copy(curseForgeApiKey = key)
             }
-            prefs.pojavRootUriFlow.first()?.let { savedUri ->
-                loadPojavInstances(Uri.parse(savedUri))
-            }
+            loadSavedLauncherFolder()
         }
     }
 
+    private suspend fun loadSavedLauncherFolder() {
+        val saved = prefs.launcherTreeUriFlow.first() ?: return
+        val uri = Uri.parse(saved)
+        if (!instanceRepository.canAccessLauncherFolder(uri)) {
+            _state.value = _state.value.copy(launcherFolderConfigured = false)
+            return
+        }
+        loadLauncherFolder(uri, save = false)
+    }
 
-    fun loadPojavInstances(uri: Uri) {
+    fun loadLauncherFolder(uri: Uri, save: Boolean = true) {
         viewModelScope.launch {
+            _state.value = _state.value.copy(launcherLoading = true, errorMessage = null)
             try {
-                val instances = pojavRepository.readProfiles(uri)
-                prefs.setPojavRootUri(uri.toString())
-                val selectedId = prefs.selectedPojavInstanceFlow.first()
+                if (!instanceRepository.canAccessLauncherFolder(uri)) {
+                    throw IllegalArgumentException(
+                        "That folder does not contain .minecraft/launcher_profiles.json. Select the Amethyst, Mojo, or PojavLauncher folder that contains .minecraft and custom_instances."
+                    )
+                }
+                val instances = instanceRepository.readProfiles(uri)
+                val selectedId = prefs.selectedInstanceIdFlow.first()
                 val selected = instances.firstOrNull { it.id == selectedId }
-                    ?: instances.firstOrNull()
-                if (selected != null && selected.id != selectedId) {
-                    prefs.setSelectedPojavInstance(selected.id)
+                if (save) {
+                    prefs.setLauncherTreeUri(uri.toString())
                 }
                 _state.value = _state.value.copy(
-                    pojavInstances = instances,
-                    selectedPojavInstance = selected,
-                    pojavRootConfigured = true,
-                    errorMessage = null
+                    launcherFolderConfigured = true,
+                    launcherLoading = false,
+                    instances = instances,
+                    selectedInstance = selected ?: instances.firstOrNull()
                 )
+                if (selected == null && instances.isNotEmpty()) {
+                    prefs.setSelectedInstanceId(instances.first().id)
+                }
             } catch (t: Throwable) {
                 _state.value = _state.value.copy(
-                    pojavRootConfigured = false,
-                    errorMessage = t.message ?: "Could not read PojavLauncher profiles.json."
+                    launcherLoading = false,
+                    launcherFolderConfigured = false,
+                    errorMessage = t.message ?: "Could not read launcher_profiles.json."
                 )
             }
         }
     }
 
-    fun selectPojavInstance(instance: PojavInstance) {
-        _state.value = _state.value.copy(selectedPojavInstance = instance)
-        viewModelScope.launch { prefs.setSelectedPojavInstance(instance.id) }
+    fun selectInstance(instance: PojavInstance) {
+        _state.value = _state.value.copy(selectedInstance = instance)
+        viewModelScope.launch { prefs.setSelectedInstanceId(instance.id) }
     }
-
-    fun installToPojavInstance(instance: PojavInstance, extractIfArchive: Boolean) {
-        val file = pendingFile ?: return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(installMessage = "Downloading \"${file.fileName}\"...")
-            val rootString = prefs.pojavRootUriFlow.first()
-            if (rootString == null) {
-                _state.value = _state.value.copy(installMessage = "PojavLauncher folder is not configured.")
-                return@launch
-            }
-            val rootUri = Uri.parse(rootString)
-            val gameDir = pojavRepository.resolveGameDirectory(rootUri, instance)
-            if (gameDir == null) {
-                _state.value = _state.value.copy(
-                    installMessage = "The selected instance folder is outside the folder you granted to BlockForge. Re-select the PojavLauncher .minecraft folder that contains the instance."
-                )
-                return@launch
-            }
-            val result = SafInstaller.downloadAndInstallInto(
-                context = getApplication(),
-                root = gameDir,
-                downloadUrl = file.downloadUrl,
-                fileName = file.fileName,
-                extractIfArchive = extractIfArchive,
-                targetSubfolder = _state.value.category.targetSubfolder
-            )
-            _state.value = _state.value.copy(
-                installMessage = when (result) {
-                    is InstallResult.Success -> result.message
-                    is InstallResult.Failure -> "❌ ${result.message}"
-                }
-            )
-        }
-    }
-
 
     fun setSource(source: Source) {
         _state.value = _state.value.copy(source = source)
@@ -136,8 +116,8 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setCategory(category: Category) {
-        _state.value = _state.value.copy(category = category)
-        search()
+        _state.value = _state.value.copy(category = category, results = emptyList())
+        if (_state.value.query.isNotBlank()) search()
     }
 
     fun setQuery(query: String) {
@@ -165,11 +145,9 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Step 1 of install: fetch the list of downloadable files/versions for a project. */
     suspend fun loadFiles(project: ProjectResult): List<FileResult> {
         pendingProject = project
-        val s = _state.value
-        val files = repository.files(project, s.curseForgeApiKey)
+        val files = repository.files(project, _state.value.curseForgeApiKey)
         pendingFiles = files
         return files
     }
@@ -178,24 +156,35 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
         pendingFile = file
     }
 
-    suspend fun rememberedFolderUri(category: Category): String? =
-        prefs.folderUriFlow(category).first()
-
-    suspend fun rememberFolderUri(category: Category, uri: Uri) {
-        prefs.setFolderUri(category, uri.toString())
-    }
-
-    /** Step 2 of install: given a user-chosen SAF folder, download + place the file. */
-    fun installTo(folderUri: Uri, extractIfArchive: Boolean) {
+    fun installToSelectedInstance() {
         val file = pendingFile ?: return
+        val instance = _state.value.selectedInstance ?: run {
+            _state.value = _state.value.copy(installMessage = "Select a Minecraft instance first.")
+            return
+        }
         viewModelScope.launch {
+            val rootUriString = prefs.launcherTreeUriFlow.first()
+            if (rootUriString == null) {
+                _state.value = _state.value.copy(installMessage = "Launcher folder permission is missing. Please select it again.")
+                return@launch
+            }
+            val rootUri = Uri.parse(rootUriString)
+            val gameDir = instanceRepository.resolveGameDir(rootUri, instance)
+            if (gameDir == null) {
+                _state.value = _state.value.copy(
+                    installMessage = "Could not find the instance game folder: ${instance.gameDir ?: ".minecraft"}"
+                )
+                return@launch
+            }
+
             _state.value = _state.value.copy(installMessage = "Downloading \"${file.fileName}\"...")
-            val result = SafInstaller.downloadAndInstall(
+            val result = SafInstaller.downloadAndInstallToDirectory(
                 context = getApplication(),
-                treeUri = folderUri,
+                directory = gameDir,
                 downloadUrl = file.downloadUrl,
                 fileName = file.fileName,
-                extractIfArchive = extractIfArchive
+                extractIfArchive = _state.value.category == Category.WORLDS,
+                targetSubfolder = _state.value.category.targetSubfolder
             )
             _state.value = _state.value.copy(
                 installMessage = when (result) {
@@ -208,6 +197,10 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearInstallMessage() {
         _state.value = _state.value.copy(installMessage = null)
+    }
+
+    fun clearError() {
+        _state.value = _state.value.copy(errorMessage = null)
     }
 
     fun clearPending() {
