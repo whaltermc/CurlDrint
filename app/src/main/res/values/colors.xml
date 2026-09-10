@@ -1,0 +1,8 @@
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="near_black">#FF0A0A0A</color>
+    <color name="amethyst">#FF9B5DE5</color>
+    <color name="amethyst_dark">#FF6C2FBF</color>
+    <color name="on_black">#FFEDEDED</color>
+    <color name="grey_panel">#FF161616</color>
+</resources>

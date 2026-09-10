@@ -1,0 +1,15 @@
+This app is designed to use the "Mojangles" font (Mojang's in-game UI font)
+for that authentic Minecraft look.
+
+Mojangles is Mojang/Microsoft's proprietary font and is NOT included here
+for licensing reasons.
+
+To enable it:
+1. Obtain Mojangles.ttf legitimately (e.g. extracted from your own licensed
+   copy of Minecraft, where permitted by its EULA).
+2. Place the file at:
+       app/src/main/assets/fonts/Mojangles.ttf
+3. Rebuild the app.
+
+If the file is not present, the app automatically falls back to a clean
+monospace font instead of crashing or failing to build.
