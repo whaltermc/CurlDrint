@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -175,7 +176,7 @@ private fun FileRow(file: FileResult, selected: Boolean, onSelect: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .padding(12.dp)
-                .then(Modifier.clickableRow(onSelect)),
+                .clickable(onClick = onSelect),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -193,6 +194,3 @@ private fun formatSize(bytes: Long): String = when {
     bytes >= 1_024 -> String.format("%.1f KB", bytes / 1_024.0)
     else -> "$bytes B"
 }
-
-private fun Modifier.clickableRow(onClick: () -> Unit): Modifier =
-    this.then(androidx.compose.foundation.clickable(onClick = onClick))

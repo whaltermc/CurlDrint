@@ -77,6 +77,23 @@ picker does.
   but can't personally guarantee a zero-error build without a real compiler
   in the loop.
 
+## Continuous integration
+
+`.github/workflows/android-build.yml` builds a debug APK on every push/PR to
+`main` (and on manual trigger) and uploads it as a downloadable workflow
+artifact. It needs no secrets: the CurseForge key is entered at runtime in
+the app's Settings screen (not baked in at build time), and the Mojangles
+font falls back to monospace automatically if the asset isn't present — so
+CI builds succeed out of the box.
+
+Since this repo doesn't include the binary `gradle-wrapper.jar`, the
+workflow installs Gradle 8.7 directly via `gradle/actions/setup-gradle`
+and runs `gradle` rather than `./gradlew`. If you'd rather commit a real
+wrapper, run `gradle wrapper --gradle-version 8.7` locally once (with
+Gradle installed) to generate `gradlew`, `gradlew.bat`, and
+`gradle/wrapper/gradle-wrapper.jar`, commit them, and the workflow will
+keep working either way — just switch the run commands back to `./gradlew`.
+
 ## Project structure
 
 ```
